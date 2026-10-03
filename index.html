@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RH LP Tools</title>
+<meta name="description" content="Scriptable widgets for Uniswap V4 liquidity on Robinhood Chain: find pools, open ladders, claim and close.">
 <style>
   :root {
     --bg: #f6f7f5; --card: #ffffff; --ink: #14171a; --muted: #5b6470; --line: #e3e6e1;
@@ -53,56 +54,248 @@
   .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
   footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
   a { color: var(--accent); }
-  #gate { display: flex; flex-direction: column; align-items: center; justify-content: center;
-    min-height: 60vh; gap: 16px; text-align: center; }
-  #gate input { font: inherit; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px;
-    background: var(--card); color: var(--ink); width: 280px; text-align: center; }
-  #gate .err { color: #d44; font-size: 14px; min-height: 20px; }
 </style>
 </head>
 <body>
-<main class="wrap" id="app">
-  <div id="gate">
-    <h1>RH LP Tools</h1>
-    <p class="muted">Enter the password to continue.</p>
-    <input type="password" id="pw" placeholder="Password" autofocus>
-    <button class="primary" id="go">Unlock</button>
-    <div class="err" id="err"></div>
+<main class="wrap">
+  <h1>RH LP Tools</h1>
+  <p class="lede">Uniswap V4 liquidity on Robinhood Chain, from your phone. Find USDG pools, open single-sided ladders, and claim, close or re-enter them, on iPhone (Scriptable) or Android (HTTP Shortcuts).</p>
+  <p class="small muted">Independent tools, named for the chain they work on. Not made by, endorsed by or affiliated with Robinhood, Uniswap or Scriptable.</p>
+
+  <h2>Download</h2>
+  <h3>iPhone / iPad</h3>
+  <div class="files" id="files">
+    <div class="card file" data-file="Robinhood Secrets.js">
+      <div><div class="name">Robinhood Secrets</div><div class="meta">Your keys and settings. Set up once, never replaced.</div></div>
+      <div class="btns"><button class="primary" data-copy>Copy code</button><a class="btn" data-dl>Open</a></div>
+    </div>
+    <div class="card file" data-file="Robinhood Pool.js">
+      <div><div class="name">Robinhood Pool</div><div class="meta">Ranks USDG pools by fee yield and opens ladders in one tap. <span data-ver></span></div></div>
+      <div class="btns"><button class="primary" data-copy>Copy code</button><a class="btn" data-dl>Open</a></div>
+    </div>
+    <div class="card file" data-file="Robinhood Portfolio.js">
+      <div><div class="name">Robinhood Portfolio</div><div class="meta">Your positions, PnL and fees. Claim, close, swap and re-enter. <span data-ver></span></div></div>
+      <div class="btns"><button class="primary" data-copy>Copy code</button><a class="btn" data-dl>Open</a></div>
+    </div>
   </div>
+  <h3>Android</h3>
+  <div class="files">
+    <div class="card file">
+      <div><div class="name">RH LP Tools for HTTP Shortcuts</div><div class="meta">Robinhood Pool and Robinhood Portfolio, plus two widget refreshers. One tap installs them, and the same tap updates them later.</div></div>
+      <div class="btns"><a class="btn primary" id="android-install" href="#">Install on Android</a><a class="btn" href="android/rh-lp-tools-android.zip">File</a></div>
+    </div>
+  </div>
+
+  <h2 id="guide">Setting up</h2>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-ios" aria-controls="pane-ios" aria-selected="true">iPhone / iPad</button>
+    <button role="tab" id="tab-android" aria-controls="pane-android" aria-selected="false">Android</button>
+  </div>
+
+  <section id="pane-ios" role="tabpanel" aria-labelledby="tab-ios">
+    <p class="muted small">About 10 minutes. You need iOS 14 or newer, a little ETH on Robinhood Chain for gas, and USDG to deposit.</p>
+
+    <h3>1. Install Scriptable</h3>
+    <p>Get <strong>Scriptable</strong> by Simon Støvring from the App Store. It is free, and it is what runs these scripts on your phone.</p>
+
+    <h3>2. Create Robinhood Secrets</h3>
+    <ol>
+      <li>Open this page in Safari on the same phone. Under <em>Download</em>, tap <strong>Copy code</strong> next to Robinhood Secrets.</li>
+      <li>Open Scriptable and tap <strong>+</strong> (top right). A blank script opens.</li>
+      <li>Long-press in the editor and tap <strong>Paste</strong>.</li>
+      <li>Tap the title at the top of the editor and rename it to exactly <code>Robinhood Secrets</code>, with the space and capitals. The other two scripts find it by that name.</li>
+      <li>Fill in your keys between the quotes (see <a href="#keys">Getting your keys</a>). Leave <code>PRACTICE_MODE: true</code>.</li>
+      <li>Tap <strong>Done</strong>.</li>
+    </ol>
+
+    <h3>3. Create Robinhood Pool and Robinhood Portfolio</h3>
+    <ol>
+      <li>Back on this page, tap <strong>Copy code</strong> next to Robinhood Pool.</li>
+      <li>In Scriptable, tap <strong>+</strong>, paste, rename it to exactly <code>Robinhood Pool</code>, tap <strong>Done</strong>.</li>
+      <li>Do the same for <code>Robinhood Portfolio</code>.</li>
+    </ol>
+    <p class="small muted">These are large files. If the paste looks cut off, scroll to the bottom of the script: the last line should be <code>Script.complete();</code>. If not, copy and paste again.</p>
+
+    <h3>4. Practice run</h3>
+    <ol>
+      <li>Tap <strong>Robinhood Pool</strong> in Scriptable's list to run it. The pool table loads (the first load can take a minute).</li>
+      <li>Tap a zap button on any pool. It shows the plan and the gas, and sends nothing.</li>
+      <li>Run <strong>Robinhood Portfolio</strong> the same way and try Claim and Close on a position if you have one.</li>
+      <li>When the numbers look right, open Robinhood Secrets, change <code>PRACTICE_MODE: true</code> to <code>false</code>, tap <strong>Done</strong>. From then on the buttons really send.</li>
+    </ol>
+
+    <h3>5. Home screen widget (optional)</h3>
+    <ol>
+      <li>Long-press an empty spot on your home screen until the icons wiggle, then tap <strong>Edit</strong> or <strong>+</strong> (top left).</li>
+      <li>Search <strong>Scriptable</strong>, choose the <strong>Medium</strong> or <strong>Large</strong> size, tap <strong>Add Widget</strong>.</li>
+      <li>Long-press the new widget, tap <strong>Edit Widget</strong>, set <strong>Script</strong> to Robinhood Pool or Robinhood Portfolio, and set <strong>When Interacting</strong> to <em>Run Script</em>.</li>
+      <li>Tap outside to finish. The widget refreshes on its own; tapping it opens the full table, where the buttons are.</li>
+    </ol>
+    <p class="small muted">Widgets only display. Opening, claiming and closing always happen in the full table, after a confirmation.</p>
+
+    <h3>Updating</h3>
+    <p>Tap <strong>Copy code</strong> for the script that changed, open it in Scriptable, select all (long-press, <em>Select All</em>), paste over it, tap <strong>Done</strong>. Never replace Robinhood Secrets: your keys and presets live there.</p>
+    <p class="small muted">Set up before 26 September 2026, when the scripts were called RH Pool, RH Portfolio and RH Secrets? Rename RH Secrets to <code>Robinhood Secrets</code> (your keys stay in it), add the two new scripts as <code>Robinhood Pool</code> and <code>Robinhood Portfolio</code>, delete the old two, and point any widget at the new names.</p>
+
+    <h3>If something goes wrong</h3>
+    <ul class="small">
+      <li><strong>"Open buttons are off", "Set a wallet" or no buttons:</strong> Robinhood Secrets is misnamed, or <code>PRIVATE_KEY</code> is empty or not 64 hex characters.</li>
+      <li><strong>"ALCHEMY_API_KEY is required":</strong> the Alchemy key is missing, or you pasted the whole URL instead of just the key.</li>
+      <li><strong>"Uniswap API key required":</strong> fill in <code>UNISWAP_API_KEY</code> in Robinhood Secrets and run the script again.</li>
+      <li><strong>Balance shows but no positions:</strong> add a Blockscout key, then close and re-run the script.</li>
+      <li><strong>Widget says it can't find a script:</strong> the widget's Script setting points at an old name. Pick it again.</li>
+    </ul>
+  </section>
+
+  <section id="pane-android" role="tabpanel" aria-labelledby="tab-android" hidden>
+    <p class="muted small">About 10 minutes. You need Android 8 or newer, a little ETH on Robinhood Chain for gas, and USDG to deposit.</p>
+
+    <h3>1. Install HTTP Shortcuts</h3>
+    <p>Get <strong>HTTP Shortcuts</strong> by Roland Meyer from <a href="https://play.google.com/store/apps/details?id=ch.rmy.android.http_shortcuts">Google Play</a>. It is free and open source, and it is what runs the Android version of these scripts. You need version 4.7.0 or newer; if the import below says the file is too new, update the app.</p>
+
+    <h3>2. Import RH LP Tools</h3>
+    <ol>
+      <li>Open this page on the phone. Under <em>Download</em>, tap <strong>Install on Android</strong>.</li>
+      <li>HTTP Shortcuts opens <em>Import from URL</em> with the address already filled in. Tap <strong>OK</strong>. It says <em>4 shortcuts imported</em>.</li>
+      <li>You now have a category called <strong>RH LP Tools</strong> with Robinhood Pool, Robinhood Portfolio and two widget refreshers.</li>
+    </ol>
+    <p class="small muted">If the button opens a web page instead of the app, open HTTP Shortcuts yourself, go to the menu (⋮) → <em>Import / Export</em> → <em>Import from URL</em>, and paste <code>https://foxtroteth.github.io/rh-tools-b/android/rh-lp-tools-android.zip</code>.</p>
+
+    <h3>3. Enter your keys</h3>
+    <ol>
+      <li>Tap <strong>Robinhood Pool</strong>. The first time it offers to set up: tap <strong>Set up now</strong>.</li>
+      <li>Paste each key when asked: Alchemy, your wallet private key, Blockscout, then Uniswap (see <a href="#keys">Getting your keys</a>). The Uniswap key is required: without it the scripts stop and ask for it.</li>
+      <li>Practice mode starts <strong>on</strong>: nothing is sent while you try things out.</li>
+    </ol>
+    <p class="small muted">Change any of them later from <strong>⚙️ Settings</strong>, at the bottom of either script's page. Robinhood Pool and Robinhood Portfolio share the same settings.</p>
+
+    <h3>4. Using it</h3>
+    <ul>
+      <li>Each script opens as a page, like the iPhone table: one card per pool or per position, with its numbers and its buttons. Tap <strong>⚡ $amount</strong> or <strong>✏️ Custom</strong> to open a ladder, <strong>Claim</strong>, <strong>Close</strong> or <strong>Re-enter</strong> on a position, <strong>↗</strong> to open it in DexScreener.</li>
+      <li>At the top: <strong>↻ Refresh</strong>, <strong>🔎 Search</strong> and the <strong>Sort</strong> buttons. At the bottom: <strong>⚙️ Settings</strong>. Close the page with <strong>✕</strong> in its top corner.</li>
+      <li>The <strong>first</strong> time you tap a button, the app asks whether to open the link. Tick <strong>Don't show again</strong> and tap <strong>OK</strong>; after that, buttons respond straight away.</li>
+      <li>Every action asks first, showing the gas. When it finishes, the page comes back with the result at the top.</li>
+      <li>The first load of each script can take a minute: short messages at the bottom of the screen say what it is doing. Robinhood Pool's buttons then answer in a second or two; Robinhood Portfolio's reload your positions first, so they take a few seconds.</li>
+    </ul>
+
+    <h3>5. Practice, then go live</h3>
+    <ol>
+      <li>Try a zap in Robinhood Pool and a claim in Robinhood Portfolio. They show the plan and the gas, and send nothing.</li>
+      <li>When the numbers look right: ⚙️ Settings (bottom of the page) → <strong>Practice mode</strong> → <strong>Turn off</strong>.</li>
+    </ol>
+
+    <h3>6. Home screen (optional)</h3>
+    <ol>
+      <li>In HTTP Shortcuts, long-press Robinhood Pool or Robinhood Portfolio and choose <strong>Place on Home Screen</strong> for an icon that opens it.</li>
+      <li>For a summary widget: long-press an empty spot on the home screen → <strong>Widgets</strong> → HTTP Shortcuts → <strong>Variable Widget</strong> → Add.</li>
+      <li>Set <strong>Global Variable</strong> to <code>RH_PORTFOLIO_WIDGET</code> (or <code>RH_POOL_WIDGET</code>), and <strong>When clicked, run shortcut</strong> to Robinhood Portfolio (or Robinhood Pool). Tap ✓. Make it bigger if the text is cut off.</li>
+      <li>For a cleaner look, in the same settings: <strong>Font Size</strong> about 13, <strong>Background</strong> → <em>Color</em> with a dark colour such as <code>#14171A</code> at 90%, and leave <strong>Widget Title</strong> empty. Without a colour, Android tints the widget from your wallpaper. Background colour needs Android 12 or newer.</li>
+      <li>It updates every time you open that shortcut. To refresh it in the background as well, edit <em>Robinhood Portfolio Widget</em> → <em>Trigger &amp; Execution Settings</em> → <em>Run repeatedly</em>. That costs battery.</li>
+    </ol>
+    <p class="small"><strong>Only ever choose an RH_…_WIDGET variable for a widget.</strong> A widget shows its variable's value on your home screen, and the same list also holds your keys.</p>
+
+    <h3>Updating</h3>
+    <p>Tap <strong>Install on Android</strong> again. The import replaces Robinhood Pool and Robinhood Portfolio with the new version and keeps your keys, settings and saved data.</p>
+    <p class="small muted">Installed before 26 September 2026, when they were called RH Pool and RH Portfolio? The same import renames them and keeps everything. A home-screen icon may keep its old label until you place it again.</p>
+
+    <h3>Your keys on Android</h3>
+    <ul class="small">
+      <li>They are stored inside HTTP Shortcuts on this phone, marked secret (hidden in its variable editor and event history) and left out of its exports, so sharing or backing up your shortcuts from the app never includes them.</li>
+      <li>Android's own backup of app data can include HTTP Shortcuts, and with it the saved key. On Android 9 and newer that backup is end-to-end encrypted with your screen lock. If that is not acceptable, use a phone kept only for this.</li>
+      <li>Do not delete the <code>RH_</code> variables in <em>Global Variables</em>: the scripts need them. Removing the key the right way is ⚙️ Settings → <em>Remove the private key</em>.</li>
+      <li>Only import RH LP Tools from this page. A shortcut file from anywhere else can read every variable in the app, keys included.</li>
+    </ul>
+
+    <h3>If something goes wrong</h3>
+    <ul class="small">
+      <li><strong>Import fails with a version message:</strong> update HTTP Shortcuts from Google Play and tap Install on Android again.</li>
+      <li><strong>No ⚡ buttons on Robinhood Pool ("Open buttons are off"):</strong> the wallet private key is not set. Tap <strong>⚙️ Open Settings</strong> on that card and add it; the buttons appear when the page comes back.</li>
+      <li><strong>"Add your wallet's private key in ⚙️ Settings":</strong> Robinhood Portfolio needs the key to list and manage positions. A watch-only address is used by the widget only.</li>
+      <li><strong>"Variable not found":</strong> an <code>RH_</code> variable was deleted. Tap Install on Android again to restore it.</li>
+      <li><strong>Slow or timed out:</strong> the app gives each request 10 seconds. Add a Blockscout key, and try again on a better connection.</li>
+    </ul>
+  </section>
+
+  <h2 id="keys">Getting your keys</h2>
+  <p class="small muted">On iPhone they go into Robinhood Secrets. On Android the first run asks for them, and ⚙️ Settings changes them.</p>
+  <h3>Alchemy (required)</h3>
+  <p>Sign up free at alchemy.com, create an app on <strong>Robinhood Chain</strong>, and copy the API key (the short string, not the URL) into <code>ALCHEMY_API_KEY</code>.</p>
+  <h3>Wallet private key (required to transact)</h3>
+  <p>Use a <strong>fresh wallet you keep only for this</strong>, holding only what you are willing to risk. The key stays on your phone: the scripts use it to sign locally and never send it anywhere. Anyone who can read the file can spend that wallet, so never share Robinhood Secrets or paste the key anywhere else.</p>
+  <h3>Uniswap (required)</h3>
+  <p>Free at hub.uniswap.org: sign in, create an API key and copy it into <code>UNISWAP_API_KEY</code>. Robinhood Pool and Robinhood Portfolio do not start without it.</p>
+  <h3>Blockscout (strongly recommended)</h3>
+  <p>Free at blockscout.com. Without it, position lookups fall back to a public explorer that often times out: the symptom is a wallet that shows a balance but no positions.</p>
+
+  <h2>Questions</h2>
+  <details id="fees"><summary>How much is the service fee?</summary>
+    <p>The scripts are free to download. Using them to transact charges a service fee, the same on iPhone and Android: 0.3 USDG for each ladder you open, however many slices it has (a zap in Robinhood Pool, or a re-entry or roll in Robinhood Portfolio), and 1.5% of the LP fees collected each time you claim fees or close, never of your deposit. Everything else is free: viewing pools and positions, swaps, cleanup and every run in practice mode. The 1.5% is worked out right before sending: the uncollected fees are read from the chain, any non-USDG part is valued at the pool's current price, and the cut is rounded up to the nearest 0.000001 USDG and paid in USDG. If a claim or close returns too little USDG to cover it, the rest comes from USDG in your wallet; if there is none, the same 1.5% is taken from each fee token instead, so a fee can never stop you exiting. A re-entry or roll pays both: 1.5% of the fees collected plus 0.3 USDG for the re-open. The fee is paid inside the same transaction as the action, so if the action fails, no fee is paid.</p></details>
+  <details><summary>What does "single-sided ladder" mean?</summary>
+    <p>You deposit only USDG, split across several slices placed below the current price. Nothing is bought up front, so there is no slippage on entry. The ladder earns fees only once the price falls into it, and as it does, your USDG is converted into the token.</p></details>
+  <details><summary>Positions don't show up</summary>
+    <p>Add a Blockscout key. The public explorer is slow and unreliable; with a key, lookups are fast. Newly opened positions can also take a minute to be indexed.</p></details>
+  <details><summary>How do I update?</summary>
+    <p>Copy the new code for Robinhood Pool or Robinhood Portfolio and paste it over the old script. Robinhood Secrets is never replaced, so your keys and presets carry over.</p></details>
+
+  <h2>Risks</h2>
+  <ul class="small">
+    <li>Providing liquidity can lose money. If the price falls through your ladder, you end up holding the token at a lower value than the USDG you put in.</li>
+    <li>Many tokens on this chain are new, thin and volatile. Check a pool's TVL before depositing.</li>
+    <li>These scripts are provided as-is, without warranty. You sign every transaction and are responsible for it. Nothing here is financial advice.</li>
+  </ul>
+
+  <footer>Robinhood Chain (4663) · Uniswap V4 · not affiliated with Robinhood, Uniswap or Scriptable.</footer>
 </main>
 <script>
-(function(){
-  var C={salt:"5wTbQ7iACs8b6MInamA2Fw==",iv:"/m9CKEDWiVjfMqyh",ct:"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"};
-  var ITER=310000;
-  var unb64=function(s){return Uint8Array.from(atob(s),function(c){return c.charCodeAt(0)})};
-  var dec=new TextDecoder();
-  async function unlock(pw){
-    var base=await crypto.subtle.importKey("raw",new TextEncoder().encode(pw),"PBKDF2",false,["deriveKey"]);
-    var key=await crypto.subtle.deriveKey({name:"PBKDF2",hash:"SHA-256",salt:unb64(C.salt),iterations:ITER},
-      base,{name:"AES-GCM",length:256},false,["decrypt"]);
-    var pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(C.iv)},key,unb64(C.ct));
-    return dec.decode(pt);
-  }
-  async function go(){
-    var pw=document.getElementById("pw").value;
-    if(!pw)return;
-    document.getElementById("go").disabled=true;
-    document.getElementById("err").textContent="";
-    try{
-      var html=await unlock(pw);
-      var app=document.getElementById("app");
-      app.innerHTML=html;
-      var codes=[];
-      app.querySelectorAll("script").forEach(function(old){codes.push(old.textContent);old.remove()});
-      codes.forEach(function(c){var s=document.createElement("script");s.textContent=c;document.body.appendChild(s)});
-    }catch(e){
-      document.getElementById("err").textContent="Wrong password.";
-      document.getElementById("go").disabled=false;
+  // Platform tabs. Android phones open on the Android tab, since the iPhone
+  // steps would otherwise read as if they applied.
+  const tabs = { ios: "pane-ios", android: "pane-android" };
+  const pick = (k) => {
+    for (const [name, pane] of Object.entries(tabs)) {
+      document.getElementById("tab-" + name).setAttribute("aria-selected", String(name === k));
+      document.getElementById(pane).hidden = name !== k;
     }
+  };
+  for (const k of Object.keys(tabs)) document.getElementById("tab-" + k).addEventListener("click", () => pick(k));
+  if (/android/i.test(navigator.userAgent) || location.hash === "#android") pick("android");
+
+  // The app's own import link: on a phone with HTTP Shortcuts it opens the
+  // import dialog directly; elsewhere it shows the app's instructions.
+  const zip = new URL("android/rh-lp-tools-android.zip", location.href).href;
+  document.getElementById("android-install").href =
+    "https://http-shortcuts.rmy.ch/import?url=" + encodeURIComponent(zip);
+
+  // Fetched once on load so "Copy code" can write to the clipboard straight
+  // from the tap. iOS Safari drops clipboard access if a fetch runs first.
+  const texts = {};
+  for (const card of document.querySelectorAll("[data-file]")) {
+    const file = card.dataset.file;
+    const url = "scripts/" + encodeURIComponent(file);
+    card.querySelector("[data-dl]").href = url;
+    const btn = card.querySelector("[data-copy]");
+    btn.disabled = true;
+    fetch(url).then(r => r.ok ? r.text() : Promise.reject(r.status)).then(t => {
+      texts[file] = t;
+      btn.disabled = false;
+      const m = t.match(/^const VERSION\s*=\s*"([^"]+)"/m);
+      const v = card.querySelector("[data-ver]");
+      if (m && v) v.textContent = "· " + m[1].replace(/ · public$/, "");
+    }).catch(() => { btn.textContent = "Use Open"; });
+    btn.addEventListener("click", async () => {
+      const t = texts[file];
+      if (!t) return;
+      try {
+        await navigator.clipboard.writeText(t);
+      } catch (e) {
+        const ta = document.createElement("textarea");
+        ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+      }
+      const was = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = was; }, 1600);
+    });
   }
-  document.getElementById("go").addEventListener("click",go);
-  document.getElementById("pw").addEventListener("keydown",function(e){if(e.key==="Enter")go()});
-})();
 </script>
 </body>
 </html>
