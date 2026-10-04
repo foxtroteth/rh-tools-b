@@ -99,7 +99,7 @@ const SECRETS = (() => {
   return {};
 })();
 
-const VERSION = "zap-v31 (up to 100 slices) · public";
+const VERSION = "zap-v33 (backup Blockscout keys) · public";
 
 // =============================================================================
 //  ZAP SETUP - the only part you need to edit.
@@ -2837,11 +2837,53 @@ const EXPLORER_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
 const EXPLORER_SELF = "https://robinhoodchain.blockscout.com";
 const EXPLORER_HOSTED = "https://api.blockscout.com/4663";
 
+
+// The keyed API can stop answering while the key itself is fine (402 "Out of
+// credits" on 2026-09-26). Checked once per run and remembered for 30 minutes:
+// while it refuses (401/402/403), explorer calls use the public instance.
+let _hostedExplorerDown = false;
+// The key in use: the first of BLOCKSCOUT_API_KEY, _2, _3 (all read from
+// Robinhood Secrets) that the keyed API still accepts. Backups are optional lines in
+// Robinhood Secrets; with none, this is simply BLOCKSCOUT_API_KEY.
+let _explorerKey = null;
+function blockscoutKeys() {
+  return [secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY"), secret("", "BLOCKSCOUT_API_KEY_2"),
+          secret("", "BLOCKSCOUT_API_KEY_3")].filter(Boolean);
+}
+function activeBlockscoutKey() {
+  if (_hostedExplorerDown) return "";
+  return _explorerKey != null ? _explorerKey : (blockscoutKeys()[0] || "");
+}
+async function checkHostedExplorer() {
+  const keys = blockscoutKeys();
+  if (!keys.length) return;
+  const c = loadJson("explorer_health");
+  if (c && Date.now() - (c.at || 0) < 30 * 60 * 1000 && c.n === keys.length) {
+    _hostedExplorerDown = !!c.down;
+    _explorerKey = c.down ? null : (keys[c.idx || 0] || keys[0]);
+    return;
+  }
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const req = new Request(EXPLORER_HOSTED + "/api/v2/stats?apikey=" + encodeURIComponent(keys[i]));
+      req.headers = { "User-Agent": EXPLORER_UA, "Accept": "application/json" };
+      req.timeoutInterval = 8;
+      await req.loadString();
+      const code = req.response && req.response.statusCode;
+      if (code === 401 || code === 402 || code === 403) continue;
+      _explorerKey = keys[i]; _hostedExplorerDown = false;
+      saveJson("explorer_health", { at: Date.now(), down: false, idx: i, n: keys.length, code });
+      return;
+    } catch (e) { return; /* offline: decide on the next run */ }
+  }
+  _explorerKey = null; _hostedExplorerDown = true;
+  saveJson("explorer_health", { at: Date.now(), down: true, n: keys.length });
+}
+
 function explorerUrl(path) {
-  const k = secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY");
+  const k = activeBlockscoutKey();
   if (!k) return EXPLORER_SELF + path;
-  return EXPLORER_HOSTED + path + (path.includes("?") ? "&" : "?")
-       + "apikey=" + encodeURIComponent(k);
+  return EXPLORER_HOSTED + path + (path.includes("?") ? "&" : "?") + "apikey=" + encodeURIComponent(k);
 }
 
 function explorerHeaders() {
@@ -3593,6 +3635,7 @@ function errorWidget(msg) {
 // -------------------------------- main ---------------------------------------
 async function main() {
   migrateOldCache();
+  await checkHostedExplorer();
   let data = null, stale = false, dataTime = Date.now(), error = null;
   try {
     const disc = await discoverPools();

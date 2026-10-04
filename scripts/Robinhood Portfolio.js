@@ -174,7 +174,7 @@ const ROUTER_SLIPPAGE_PERCENT = 1;
 const TRADE_PRICE_MAX_AGE_MS = 30 * 1000;
 
 // -- 5. Rarely need changing. -------------------------------------------------
-const VERSION           = "close-v102 (resized positions in realised) · public";
+const VERSION           = "close-v110 (PnL first, claims behind it) · public";
 const MINUTES_TO_CONFIRM = 20;   // a transaction unclaimed this long expires
 const GAS_LIMIT_BUFFER = 1.30;   // ask for 30% more gas than estimated
 const MAX_FEE_MULT     = 2.0;    // allow the fee to double before failing
@@ -2146,7 +2146,63 @@ const WIDGET_BUDGET_MS = 20_000;
 const EXPLORER_SELF = "https://robinhoodchain.blockscout.com";
 const EXPLORER_HOSTED = "https://api.blockscout.com/4663";
 function explorerBase() {
-  return secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY") ? EXPLORER_HOSTED : EXPLORER_SELF;
+  return activeBlockscoutKey() ? EXPLORER_HOSTED : EXPLORER_SELF;
+}
+
+// The keyed API can stop answering while the key itself is fine: on
+// 2026-09-26 it returned 402 "Out of credits" for every call, and positions
+// opened after that had no age, no %/d and no claimed fees, because their mint
+// could not be looked up. Checked once per run (and remembered for 30 minutes,
+// so widget runs pay nothing): if it refuses with 401/402/403, every explorer
+// call goes to the public instance instead until the next check.
+let _hostedExplorerDown = false;
+// The key in use: the first of BLOCKSCOUT_API_KEY, _2 ... _9 (all read from
+// Robinhood Secrets) that the keyed API still accepts. Backups are optional lines in
+// Robinhood Secrets; with none, this is simply BLOCKSCOUT_API_KEY.
+let _explorerKey = null;
+function blockscoutKeys() {
+  const keys = [secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY")];
+  for (let i = 2; i <= 9; i++) keys.push(secret("", `BLOCKSCOUT_API_KEY_${i}`));
+  return keys.filter(Boolean);
+}
+// For the footer: which explorer answered this run, so a missing figure can be
+// traced to a refused key or a rate-limited public instance.
+let _mintLookupNote = "";
+function explorerNote() {
+  const keys = blockscoutKeys();
+  if (!keys.length) return "explorer public (no key)";
+  if (_hostedExplorerDown) return `explorer public (${keys.length} key${keys.length > 1 ? "s" : ""} refused)`;
+  const i = _explorerKey != null ? keys.indexOf(_explorerKey) : 0;
+  return `explorer key ${i + 1}/${keys.length}`;
+}
+function activeBlockscoutKey() {
+  if (_hostedExplorerDown) return "";
+  return _explorerKey != null ? _explorerKey : (blockscoutKeys()[0] || "");
+}
+async function checkHostedExplorer() {
+  const keys = blockscoutKeys();
+  if (!keys.length) return;
+  const c = loadJson("explorer_health");
+  if (c && Date.now() - (c.at || 0) < 30 * 60 * 1000 && c.n === keys.length) {
+    _hostedExplorerDown = !!c.down;
+    _explorerKey = c.down ? null : (keys[c.idx || 0] || keys[0]);
+    return;
+  }
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const req = new Request(EXPLORER_HOSTED + "/api/v2/stats?apikey=" + encodeURIComponent(keys[i]));
+      req.headers = { "User-Agent": EXPLORER_UA, "Accept": "application/json" };
+      req.timeoutInterval = 8;
+      await req.loadString();
+      const code = req.response && req.response.statusCode;
+      if (code === 401 || code === 402 || code === 403) continue;
+      _explorerKey = keys[i]; _hostedExplorerDown = false;
+      saveJson("explorer_health", { at: Date.now(), down: false, idx: i, n: keys.length, code });
+      return;
+    } catch (e) { return; /* offline: decide on the next run */ }
+  }
+  _explorerKey = null; _hostedExplorerDown = true;
+  saveJson("explorer_health", { at: Date.now(), down: true, n: keys.length });
 }
 // The hosted API takes the key as a query parameter; the header form is not
 // accepted there. Callers build "<base>/api/v2/<path>" and pass it through here.
@@ -2155,7 +2211,7 @@ function explorerBase() {
 const EXPLORER_KEYED = !!secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY");
 
 function explorerUrl(path) {
-  const k = secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY");
+  const k = activeBlockscoutKey();
   if (!k) return EXPLORER_SELF + path;
   return EXPLORER_HOSTED + path + (path.includes("?") ? "&" : "?") + "apikey=" + encodeURIComponent(k);
 }
@@ -3479,7 +3535,7 @@ async function needsRouterAllowance(token, owner, spender, amount) {
 // the URL so it is never part of anything that gets logged or displayed.
 function explorerHeaders() {
   const h = { "User-Agent": EXPLORER_UA, "Accept": "application/json" };
-  const k = secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY");
+  const k = activeBlockscoutKey();
   if (k) h["x-api-key"] = k;
   return h;
 }
@@ -5038,13 +5094,97 @@ async function fetchMintCheckpoints(items) {
   return out;
 }
 
+// A position met for the first time may already have been claimed from and
+// resized many times (a copy bot compounds every few minutes). Its ledger entry
+// is then built by replaying its history instead of from the mint checkpoint
+// alone: the wallet's PositionManager transactions since the mint (explorer),
+// the ModifyLiquidity events of this position in their receipts, and at each
+// event block the position's exact size and fee checkpoint. Every touch
+// collects the fees accrued since the previous one, on the size held before it,
+// valued at that block's price; every size change is capital added or returned
+// at that block's price. Exact rather than estimated; paid once per position,
+// in the app only. Returns null when the history cannot be read completely.
+async function replayPositionHistory(pos, pid, mintBlock) {
+  const url = explorerUrl(`/api?module=account&action=txlist&address=${WALLET}`
+    + `&startblock=${mintBlock}&endblock=99999999999&page=1&offset=1000&sort=asc`);
+  const req = new Request(url);
+  req.headers = explorerHeaders();
+  req.timeoutInterval = 20;
+  const list = ((await req.loadJSON()) || {}).result;
+  if (!Array.isArray(list) || list.length >= 1000) return null;
+  const hashes = [...new Set(list.filter(t => _lc(t.to) === _lc(POSITION_MANAGER) && String(t.isError) !== "1")
+    .map(t => t.hash))];
+  const receipts = await histMany(hashes.map(h => ({ method: "eth_getTransactionReceipt", params: [h] })));
+  const blocks = new Set();
+  for (const rc of receipts) {
+    for (const log of (rc && rc.logs) || []) {
+      if (_lc(log.address) !== _lc(POOL_MANAGER) || _lc(log.topics && log.topics[0]) !== MODIFY_LIQUIDITY_TOPIC) continue;
+      const d = _wordsOf(log.data);
+      if (d.length >= 4 && BigInt("0x" + d[3]).toString() === String(pos.tokenId)) blocks.add(Number(rc.blockNumber));
+    }
+  }
+  const order = [...blocks].sort((a, b) => a - b);
+  if (!order.length || order[0] !== mintBlock) return null;
+  const key = positionKey(pos.tokenId, pos.tickLower, pos.tickUpper);
+  const vals = await histMany(order.flatMap(b => [
+    _histCall(STATE_VIEW, "0x" + SEL.getPositionInfo + pid + key, b),
+    _histCall(STATE_VIEW, "0x" + SEL.getSlot0 + pid, b),
+  ]));
+  const st = order.map((b, k) => {
+    const w = _wordsOf(vals[k * 2]).map(x => BigInt("0x" + x));
+    const s0 = _wordsOf(vals[k * 2 + 1]);
+    if (w.length < 3 || s0.length < 2) throw new Error("short history read");
+    return { L: w[0], last0: w[1], last1: w[2],
+             pp: { sqrtPriceX96: BigInt("0x" + s0[0]), tick: decInt24(Number(BigInt("0x" + s0[1]) & 0xFFFFFFn)) } };
+  });
+  if (!(st[0].L > 0n)) return null;
+  const e = { b0: String(st[0].last0), b1: String(st[0].last1), L0: String(st[0].L),
+              raw0: "0", raw1: "0", usd: 0, addedUsd: 0, removedUsd: 0, replayed: order.length };
+  let raw0 = 0n, raw1 = 0n;
+  for (let k = 1; k < st.length; k++) {
+    const a = st[k - 1], b = st[k];
+    const f0 = a.L * _sub256(b.last0, a.last0) / Q128, f1 = a.L * _sub256(b.last1, a.last1) / Q128;
+    raw0 += f0; raw1 += f1;
+    e.usd += feesUsd(pos, { fee0: f0, fee1: f1 }, b.pp);
+    if (b.L !== a.L) {
+      const dL = b.L > a.L ? b.L - a.L : a.L - b.L;
+      const v = computePositionValue({ ...pos, liquidity: dL }, b.pp).totalUsd;
+      if (b.L > a.L) e.addedUsd += v; else e.removedUsd += v;
+    }
+  }
+  const last = st[st.length - 1];
+  return { ...e, raw0: String(raw0), raw1: String(raw1), cp0: String(last.last0), cp1: String(last.last1),
+           L: String(last.L), seen: Date.now() };
+}
+
+// Runs fn over items, n at a time, starting nothing new once budgetMs has
+// passed. Replays used to run one after another: with a copy bot opening
+// positions all day that was 90s to 7 min per app open (2026-10-04, 92 NFTs).
+async function eachLimited(items, n, budgetMs, fn) {
+  const until = Date.now() + budgetMs;
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length && Date.now() < until) {
+      const i = next++;
+      try { await fn(items[i], i); } catch (e) {}
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+}
+const REPLAY_PARALLEL = 4, REPLAY_BUDGET_MS = 90 * 1000;
+
 // Brings the ledger up to date and returns tokenId -> ledger entry (usd is the
 // claimed total; addedUsd/removedUsd are size changes; L0 the minted size). Never
 // throws: a failure leaves the ledger as it was and PnL without claims.
-async function updateClaims(positions, poolKeys, feeRaw, poolPrices, mintBlocks, valueUsdOf) {
+// quick: no replays and no new entries, only what the fee reads already in hand
+// can book. The table shows PnL from that first; the full pass runs after it.
+// The returned map's .pending counts positions the full pass still has work for.
+async function updateClaims(positions, poolKeys, feeRaw, poolPrices, mintBlocks, valueUsdOf, quick) {
   const claimed = new Map();
+  claimed.pending = 0;
   try {
     const ledger = loadClaims();
+    const light = config.runsInWidget || !!quick;
     let changed = false;
     const missing = [];
     for (const pos of positions) {
@@ -5053,12 +5193,46 @@ async function updateClaims(positions, poolKeys, feeRaw, poolPrices, mintBlocks,
         missing.push({ pos, pid: computePoolId(poolKeys.get(pos.poolKeyStr)), block: mintBlocks[id] });
       }
     }
+    // New entries are made in the app only: the replay below is too much for a
+    // widget's time budget, and a simple entry made there would stop the app
+    // from ever replaying that position.
+    if (missing.length && light) missing.length = 0;
+    // Entries made before replay existed (close-v103 and earlier) counted
+    // pre-sighting claims on the minted size at one price. Each open one is
+    // replayed once, in the app, and replaced if the replay succeeds.
+    // A replay that failed (explorer refusing, rate-limited) is tried again on
+    // later app runs, up to three times, rather than given up after one.
+    const redo = positions.filter(pos => {
+      const id = String(pos.tokenId), e = ledger.pos[id];
+      return e && !e.replayed && (e.replayTries || 0) < 3 && mintBlocks[id];
+    });
+    claimed.pending = redo.length + positions.filter(pos => {
+      const id = String(pos.tokenId);
+      return !ledger.pos[id] && feeRaw.get(pos.tokenId) && mintBlocks[id];
+    }).length;
+    if (!light) {
+      await eachLimited(redo, REPLAY_PARALLEL, REPLAY_BUDGET_MS, async pos => {
+        const id = String(pos.tokenId), e = ledger.pos[id];
+        e.replayTries = (e.replayTries || 0) + 1; changed = true;
+        const r = await replayPositionHistory(pos, computePoolId(poolKeys.get(pos.poolKeyStr)), mintBlocks[id])
+          .catch(() => null);
+        if (r) ledger.pos[id] = r;
+      });
+    }
+    // A new position whose replay did not run (out of budget) or failed gets a
+    // mint-checkpoint entry below, which is replayed on a later full pass.
+    const replayedNew = new Set();
+    await eachLimited(missing, REPLAY_PARALLEL, REPLAY_BUDGET_MS, async m => {
+      const e = await replayPositionHistory(m.pos, m.pid, m.block).catch(() => null);
+      if (e) { ledger.pos[String(m.pos.tokenId)] = e; changed = true; replayedNew.add(m); }
+    });
+    for (let i = missing.length - 1; i >= 0; i--) if (replayedNew.has(missing[i])) missing.splice(i, 1);
     if (missing.length) {
       const bases = await fetchMintCheckpoints(missing).catch(() => new Map());
       for (const [id, b] of bases) {
         ledger.pos[id] = { b0: String(b.last0), b1: String(b.last1), cp0: String(b.last0), cp1: String(b.last1),
                            L: String(b.liq), L0: String(b.liq), raw0: "0", raw1: "0", usd: 0,
-                           addedUsd: 0, removedUsd: 0, seen: Date.now() };
+                           addedUsd: 0, removedUsd: 0, seen: Date.now(), replayTries: 1 };
         changed = true;
       }
     }
@@ -5068,10 +5242,15 @@ async function updateClaims(positions, poolKeys, feeRaw, poolPrices, mintBlocks,
       if (!e) continue;
       e.seen = Date.now();
       if (info && pp) {
-        const d0 = info.last0 - BigInt(e.cp0), d1 = info.last1 - BigInt(e.cp1);
-        // Checkpoints only grow. A drop is a transient bad read (the MUSEPAD
-        // zero above), so nothing is recorded and the next refresh retries.
-        if ((d0 > 0n || d1 > 0n) && d0 >= 0n && d1 >= 0n) {
+        // Fee growth is a uint256 that wraps by design, and V4 positions often
+        // start just below 2^256, so the difference is taken modulo 2^256. A
+        // plain subtraction read every wrapped checkpoint as negative and
+        // recorded nothing for that position, ever (CASHED, 2026-09-26). A
+        // transient bad read (the MUSEPAD zero above) now shows up as an
+        // astronomically large difference instead, which the plausibility
+        // check below refuses, so the next refresh retries.
+        const d0 = _sub256(info.last0, BigInt(e.cp0)), d1 = _sub256(info.last1, BigInt(e.cp1));
+        if (d0 > 0n || d1 > 0n) {
           // Fees accrue on the liquidity held before the touch, which is the
           // liquidity the ledger last saw.
           const L = BigInt(e.L);
@@ -5262,7 +5441,10 @@ async function fetchMintTimes(wallet, blocksOut) {
   req.headers = explorerHeaders();
   req.timeoutInterval = 8;
   const j = await req.loadJSON();
-  const rows = (j && j.result) || [];
+  // "Out of credits" and friends come back as JSON without a list. That is a
+  // failure, not a wallet with no mints.
+  if (!Array.isArray(j && j.result)) throw new Error("explorer returned no transfer list");
+  const rows = j.result;
   const times = {};
   for (const t of rows) {
     if ((t.from || "").toLowerCase() !== ZERO_ADDR) continue;   // mints only
@@ -7297,10 +7479,16 @@ function errorWidget(msg) {
 }
 
 // -------------------------------- main ---------------------------------------
-async function main() {
+// quick: everything needed for value and PnL, nothing that waits on the
+// explorer per position (mint lookups, claimed-fee replays). The app shows a
+// quick pass first and runs the full one behind it; result.pending says whether
+// the full pass has anything left to do.
+async function main(opts) {
+  const quick = !!(opts && opts.quick);
   const startedAt = Date.now();
   const timings = {};
   migrateOldCache();
+  await checkHostedExplorer();
   if (!WALLET) {
     const msg = "Set a wallet: widget Parameter = wallet address (or \"Name|wallet\"), or PRIVATE_KEY in Robinhood Secrets.";
     return { widget: errorWidget(msg), data: null, message: msg };
@@ -7541,7 +7729,8 @@ async function main() {
     const blocksMeta = loadJson("mint_blocks_meta") || {};
     const wantBlocks = positions.some(p => !mintBlocks[p.tokenId])
       && Date.now() - (blocksMeta.lastAttempt || 0) > 86400 * 1000;
-    if (!config.runsInWidget && (positions.some(p => !mintTimes[p.tokenId]) || wantBlocks)) {
+    const mintsPending = positions.some(p => !mintTimes[p.tokenId] || !mintBlocks[p.tokenId]);
+    if (!config.runsInWidget && !quick && (positions.some(p => !mintTimes[p.tokenId]) || wantBlocks)) {
       const meta = loadJson("mints_meta") || {};
       if (Date.now() - (meta.lastAttempt || 0) > MINT_RETRY_MS) {
         try {
@@ -7550,13 +7739,41 @@ async function main() {
           saveMintTimes(mintTimes);
           mintBlocks = { ...mintBlocks, ...blocks };
           saveJson("mint_blocks", mintBlocks);
+          // Only an answer counts as the day's attempt; a failed call must not
+          // hold the blocks back for 24 hours.
+          saveJson("mint_blocks_meta", { lastAttempt: Date.now() });
         } catch (e) {}
         saveJson("mints_meta", { lastAttempt: Date.now() });
-        saveJson("mint_blocks_meta", { lastAttempt: Date.now() });
       }
     }
+    // The page above holds only the wallet's newest transfers. A wallet a copy
+    // bot churns can push a live position's mint out of it within an hour or
+    // two, leaving it with no age, no %/d and no claimed fees. Those are looked
+    // up one NFT at a time instead, in the app, a dozen at most per run.
+    if (!config.runsInWidget && !quick) {
+      const miss = positions.filter(p => !mintTimes[p.tokenId] || !mintBlocks[p.tokenId]).slice(0, 12);
+      const found = await Promise.all(miss.map(async p => {
+        try {
+          const r = new Request(explorerUrl(`/api/v2/tokens/${POSITION_MANAGER}/instances/${p.tokenId}/transfers`));
+          r.headers = explorerHeaders();
+          r.timeoutInterval = 10;
+          const j = await r.loadJSON();
+          const m = ((j && j.items) || []).find(t => t.type === "token_minting" && _lc(t.to && t.to.hash) === _lc(WALLET));
+          return m ? { id: p.tokenId, block: Number(m.block_number), at: Math.floor(Date.parse(m.timestamp) / 1000) } : null;
+        } catch (e) { return null; }
+      }));
+      let got = 0;
+      for (const f of found) {
+        if (!f || !Number.isSafeInteger(f.block) || !Number.isFinite(f.at)) continue;
+        mintTimes[f.id] = f.at; mintBlocks[f.id] = f.block; got++;
+      }
+      if (miss.length) _mintLookupNote = `mints ${got}/${miss.length} found`;
+      if (got) { saveMintTimes(mintTimes); saveJson("mint_blocks", mintBlocks); }
+    }
     const claimedUsd = await updateClaims(positions, poolKeys, feeRaw, poolPrices, mintBlocks,
-      pos => { const pp = poolPrices.get(pos.poolKeyStr); return pp ? computePositionValue(pos, pp).totalUsd : 0; });
+      pos => { const pp = poolPrices.get(pos.poolKeyStr); return pp ? computePositionValue(pos, pp).totalUsd : 0; },
+      quick);
+    const pending = quick && (mintsPending || claimedUsd.pending > 0);
     const nowSec = Date.now() / 1000;
 
     // 5. Compute values and merge by pair
@@ -7804,6 +8021,7 @@ async function main() {
 
     timings.total = Date.now() - startedAt;
     data = {
+      pending,
       totalValue,
       netWorth,
       walletUsd,
@@ -7870,6 +8088,7 @@ function statusRow(t, kind, text, onTap, gas) {
   t.addRow(r);
 }
 function statusText(stale, dataTime, refreshing, error) {
+  if (refreshing === "claims") return `Updated ${fmtTimeSec(dataTime)}   ·   loading claimed fees and ages…`;
   if (refreshing) return `Refreshing…   ·   showing data from ${fmtTimeSec(dataTime)}`;
   if (stale) return `Showing cached data from ${fmtTimeSec(dataTime)} — refresh failed${error ? ": " + error : ""}   ·   tap to retry`;
   return `Updated ${fmtTimeSec(Date.now())}   ·   tap to refresh`;
@@ -8462,9 +8681,10 @@ function fillTable(t, d, stale, dataTime, refreshing, error, onRefresh, onClose,
     ? ` · IDs/positions ${(d.timings.positions / 1000).toFixed(1)}s · live ${(d.timings.live / 1000).toFixed(1)}s · total ${(d.timings.total / 1000).toFixed(1)}s`
       + (d.timings.idsDiag ? ` · ${d.timings.idsDiag}` : "")
     : "";
+  const diag = ` · ${explorerNote()}${_mintLookupNote ? ` · ${_mintLookupNote}` : ""}`;
   const fCell = foot.addText(
     "Open LP Agent Portfolio",
-    `${d.openCount} open slices${timing} · ${VERSION}`
+    `${d.openCount} open slices${timing}${diag} · ${VERSION}`
   );
   fCell.titleFont = Font.semiboldSystemFont(15);
   fCell.titleColor = COL.blue;
@@ -9130,10 +9350,38 @@ if (!config.runsInWidget && !String(secret("", "UNISWAP_API_KEY") || "").trim())
     if (hard) { try { saveJson("token_prices", {}); } catch (e) {} }
     if (!keepProgress) progress = null;
     show(current || { data: null, message: "Loading…" }, true);
-    try { current = await main(); }
+    const myGen = ++gen;
+    // Quick pass first: value and PnL in seconds. Mint lookups and claimed-fee
+    // replays wait on the explorer one position at a time, and with a copy bot
+    // churning ~90 positions they held the whole table back for 1.5 to 7
+    // minutes (2026-10-04). They run behind the table instead.
+    try { current = await main({ quick: true }); }
     catch (e) { current = { data: null, message: "Couldn't load: " + String((e && e.message) || e).slice(0, 100) }; }
     busy = false;
-    show(current, false);
+    const more = !!(current && current.data && current.data.pending);
+    show(current, more ? "claims" : false);
+    if (more) fullPass(myGen);
+  };
+  // The full pass, behind the table. Buttons stay live meanwhile; if one is in
+  // use when the pass finishes, its own refresh will show the new figures, so
+  // the pass does not redraw over it.
+  // gen counts refreshes: a pass that started before a later refresh (say, a
+  // close) would otherwise land after it and put the older figures back.
+  let fullRunning = false, gen = 0;
+  const fullPass = async (myGen) => {
+    if (fullRunning) return;
+    fullRunning = true;
+    let r = null;
+    try { r = await main(); } catch (e) {}
+    fullRunning = false;
+    if (busy) return;
+    if (myGen !== gen) {
+      // Superseded. Its ledger and mint work is saved, so the next pass is short.
+      if (current && current.data && current.data.pending) fullPass(gen);
+      return;
+    }
+    if (r && r.data && r.data.rows) current = r;
+    if (current) show(current, false);
   };
 
   const cached = loadCache();
