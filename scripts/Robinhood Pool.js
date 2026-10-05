@@ -99,7 +99,7 @@ const SECRETS = (() => {
   return {};
 })();
 
-const VERSION = "zap-v33 (backup Blockscout keys) · public";
+const VERSION = "zap-v34 (backup Alchemy keys, up to 9 explorer keys) · public";
 
 // =============================================================================
 //  ZAP SETUP - the only part you need to edit.
@@ -2239,6 +2239,13 @@ const WALLET = PRIV
 const _ALCHEMY = secret(ALCHEMY_API_KEY, "ALCHEMY_API_KEY");
 const ZAP_RPC = _ALCHEMY && /^[A-Za-z0-9_-]+$/.test(_ALCHEMY)
   ? "https://robinhood-mainnet.g.alchemy.com/v2/" + _ALCHEMY : "";
+// Backup Alchemy keys (ALCHEMY_API_KEY_2, _3). zapRpc moves to the next one
+// when a read stays rate limited on the current key, and later calls use it.
+const ZAP_RPCS = [ZAP_RPC, ...[2, 3].map(i => secret("", `ALCHEMY_API_KEY_${i}`))
+  .filter(k => k && /^[A-Za-z0-9_-]+$/.test(k))
+  .map(k => "https://robinhood-mainnet.g.alchemy.com/v2/" + k)]
+  .filter((u, i, a) => u && a.indexOf(u) === i);
+let _zapIdx = 0;
 const ZAP_READY = !!(PRIV && ZAP_RPC);
 // What the table lacks for its open buttons, named by the row standing in
 // for them.
@@ -2251,7 +2258,20 @@ function pause(ms) { return new Promise(r => Timer.schedule(ms, false, r)); }
 
 async function zapRpc(method, params) {
   if (!ZAP_RPC) throw new Error("ALCHEMY_API_KEY is required to zap");
-  const req = new Request(ZAP_RPC);
+  try { return await zapRpcAt(ZAP_RPCS[_zapIdx] || ZAP_RPC, method, params); }
+  catch (e) {
+    // Never for a broadcast: a send goes once, to one endpoint. A read that
+    // stayed throttled or unreachable on this key tries the next key, which
+    // every later call then uses.
+    const m = String((e && e.message) || e);
+    if (method === "eth_sendRawTransaction" || /revert|execution|insufficient|nonce/i.test(m)
+        || _zapIdx + 1 >= ZAP_RPCS.length) throw e;
+    _zapIdx += 1;
+    return zapRpc(method, params);
+  }
+}
+async function zapRpcAt(url, method, params) {
+  const req = new Request(url);
   req.method = "POST";
   req.headers = { "Content-Type": "application/json" };
   req.body = JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 });
@@ -2847,8 +2867,9 @@ let _hostedExplorerDown = false;
 // Robinhood Secrets; with none, this is simply BLOCKSCOUT_API_KEY.
 let _explorerKey = null;
 function blockscoutKeys() {
-  return [secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY"), secret("", "BLOCKSCOUT_API_KEY_2"),
-          secret("", "BLOCKSCOUT_API_KEY_3")].filter(Boolean);
+  const keys = [secret(BLOCKSCOUT_API_KEY, "BLOCKSCOUT_API_KEY")];
+  for (let i = 2; i <= 9; i++) keys.push(secret("", `BLOCKSCOUT_API_KEY_${i}`));
+  return keys.filter(Boolean);
 }
 function activeBlockscoutKey() {
   if (_hostedExplorerDown) return "";
